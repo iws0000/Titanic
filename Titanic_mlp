@@ -1,0 +1,133 @@
+import numpy as np # linear algebra
+import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
+
+# Input data files are available in the read-only "../input/" directory
+# For example, running this (by clicking run or pressing Shift+Enter) will list all files under the input directory
+
+import os
+for dirname, _, filenames in os.walk('/kaggle/input'):
+    for filename in filenames:
+        print(os.path.join(dirname, filename))
+
+# You can write up to 20GB to the current directory (/kaggle/working/) that gets preserved as output when you create a version using "Save & Run All" 
+# You can also write temporary files to /kaggle/temp/, but they won't be saved outside of the current session
+
+# %% [code] {"execution":{"iopub.status.busy":"2024-02-13T04:26:07.911369Z","iopub.execute_input":"2024-02-13T04:26:07.911893Z","iopub.status.idle":"2024-02-13T04:26:07.955335Z","shell.execute_reply.started":"2024-02-13T04:26:07.911864Z","shell.execute_reply":"2024-02-13T04:26:07.954483Z"}}
+train_df = pd.read_csv('/kaggle/input/titanic/train.csv')
+test_df=pd.read_csv("/kaggle/input/titanic/test.csv")
+sample_sub=pd.read_csv("/kaggle/input/titanic/gender_submission.csv")
+
+
+train_df=train_df.astype({"PassengerId":str,"Pclass":str})
+test_df=test_df.astype({"PassengerId":str,"Pclass":str})
+
+
+all_df=pd.concat([train_df,test_df],axis=0).reset_index(drop=True)
+all_df["Test_Flag"]=0
+all_df.loc[train_df.shape[0]: , 'Test_Flag'] = 1
+
+
+# Ageの欠損を中央値で補完
+all_df['Age'] =  all_df['Age'].fillna( all_df['Age'].median())
+
+# Fareの欠損を中央値で補完
+all_df['Fare'] =  all_df['Fare'].fillna( all_df['Fare'].median())
+
+all_df['Embarked'] =all_df["Embarked"].fillna("NaN")
+
+import pandas as pd
+all_df['FareBand'] = pd.qcut(all_df['Fare'], 4)
+all_df['AgeBand'] =pd.qcut(all_df["Age"],4)
+
+all_df = pd.get_dummies(all_df, columns= ["Sex", "Pclass","Embarked","AgeBand","FareBand"])
+
+all_df["FamilySize"]=all_df["SibSp"]+all_df["Parch"]+1
+all_df['Alone'] = all_df['FamilySize'].map(lambda s: 1 if  s == 1  else 0)
+all_df['MedF']   = all_df['FamilySize'].map(lambda s: 1 if 2 <= s <= 4 else 0)
+all_df['LargeF'] = all_df['FamilySize'].map(lambda s: 1 if s >= 5 else 0)
+
+
+
+# 前処理を施したall_dfを訓練データとテストデータに分割
+train = all_df[all_df['Test_Flag']==0]
+test = all_df[all_df['Test_Flag']==1].reset_index(drop=True)
+
+# 訓練データのSurvivedをtargetにする
+target = train['Survived']
+
+# 今回学習に用いないカラムを削除
+drop_col = [
+    'PassengerId','Age',
+    'Ticket', 'Fare','Cabin',
+    'Test_Flag','Name','Survived',"FamilySize"]
+
+train_fv= train.drop(columns=drop_col,axis=1).astype(float)
+test_fv= test.drop(columns=drop_col,axis=1).astype(float)
+
+    
+import tensorflow as tf
+import random
+import os
+from tensorflow.keras.utils import to_categorical
+from sklearn.model_selection import KFold
+from sklearn.metrics import accuracy_score
+
+# 乱数を固定
+tf.random.set_seed(0)
+np.random.seed(0)
+random.seed(0)
+os.environ["PYTHONHASHSEED"] = "0"
+
+cv = KFold(n_splits=3, random_state=0, shuffle=True)
+
+train_acc_list = []
+val_acc_list = []
+
+# fold毎に学習データのインデックスと評価データのインデックスが得られます
+for i ,(trn_index, val_index) in enumerate(cv.split(train, target)):
+    
+    print(f'Fold : {i}')
+    # データ全体(Xとy)を学習データと評価データに分割
+    X_train ,X_val = train_fv.loc[trn_index], train_fv.loc[val_index]
+    y_train ,y_val = target[trn_index], target[val_index]
+    print(X_train)
+    print(y_train)
+    print(to_categorical(y_train))
+    
+    # モデルを定義
+    model = tf.keras.models.Sequential([
+        tf.keras.layers.Input(X_train.shape[1]),
+        tf.keras.layers.Dense(64, activation='relu'),
+        tf.keras.layers.Dropout(0.5),
+        tf.keras.layers.Dense(32, activation='relu'),
+        tf.keras.layers.Dropout(0.5),
+        tf.keras.layers.Dense(16, activation='relu'),
+        tf.keras.layers.Dense(2, activation='softmax')
+    ])
+    # モデルをコンパイル
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.01),
+                  loss='categorical_crossentropy',
+                  metrics=['accuracy'])
+    
+    model.fit(
+        X_train, to_categorical(y_train),
+        batch_size=256, epochs=100, verbose=False
+        )
+    
+    y_pred = np.argmax(model.predict(X_train),axis=1)
+    train_acc = accuracy_score(
+        y_train, y_pred
+        )
+    print(train_acc)
+    train_acc_list.append(train_acc)
+    
+    y_pred_val = np.argmax(model.predict(X_val),axis=1)
+    val_acc = accuracy_score(
+        y_val, y_pred_val
+        )
+    print(val_acc)
+    val_acc_list.append(val_acc)
+
+print('-'*10 + 'Result' +'-'*10)
+print(f'Train_acc : {train_acc_list} , Ave : {np.mean(train_acc_list)}')
+print(f'Valid_acc : {val_acc_list} , Ave : {np.mean(val_acc_list)}')
